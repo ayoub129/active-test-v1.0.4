@@ -3,6 +3,8 @@
     "https://eaxashxpqpihonnuhdpx.supabase.co/functions/v1/get-active-attempt";
   var ACTIVE_TEST_CONTENT_FUNCTION_URL =
     "https://eaxashxpqpihonnuhdpx.supabase.co/functions/v1/get-active-test-content";
+  var SAVE_ANSWER_FUNCTION_URL =
+    "https://eaxashxpqpihonnuhdpx.supabase.co/functions/v1/save-answer";
   var TOGGLE_QUESTION_FLAG_FUNCTION_URL =
     "https://eaxashxpqpihonnuhdpx.supabase.co/functions/v1/toggle-question-flag";
   var SECTION_REVIEW_URL = "https://www.premedcatalyst.com/section-review";
@@ -451,6 +453,114 @@
       ATTEMPT_ANSWER_EVENTS_STORAGE_KEY,
       JSON.stringify(events || []),
     );
+  }
+
+  function syncAttemptAnswersFromContent(content) {
+    if (!content || !content.attempt_id || !Array.isArray(content.navigation_items)) {
+      return;
+    }
+
+    var map = getAttemptAnswerMap();
+    var changed = false;
+
+    content.navigation_items.forEach(function (item) {
+      if (!item || !item.question_id || !item.selected_choice) return;
+      map[item.question_id] = {
+        attempt_id: content.attempt_id,
+        selected_choice: item.selected_choice,
+        selected_at: new Date().toISOString(),
+      };
+      changed = true;
+    });
+
+    if (changed) setAttemptAnswerMap(map);
+  }
+
+  function mergeLocalAttemptAnswersIntoContent(content) {
+    if (!content || !content.attempt_id) return content;
+
+    var map = getAttemptAnswerMap();
+    function resolveChoice(questionId, existingChoice) {
+      var local = map[questionId];
+      if (
+        local &&
+        local.attempt_id === content.attempt_id &&
+        local.selected_choice
+      ) {
+        return local.selected_choice;
+      }
+      return existingChoice || null;
+    }
+
+    if (Array.isArray(content.navigation_items)) {
+      content.navigation_items.forEach(function (item) {
+        if (!item || !item.question_id) return;
+        item.selected_choice = resolveChoice(
+          item.question_id,
+          item.selected_choice,
+        );
+      });
+    }
+
+    if (content.current_question && content.current_question.id) {
+      content.current_question.selected_choice = resolveChoice(
+        content.current_question.id,
+        content.current_question.selected_choice,
+      );
+    }
+
+    return content;
+  }
+
+  function countAnsweredQuestions(content) {
+    if (!content || !Array.isArray(content.navigation_items)) return 0;
+    return content.navigation_items.filter(function (item) {
+      return Boolean(item && item.selected_choice);
+    }).length;
+  }
+
+  function updateQuestionProgressFromContent(content) {
+    setQuestionProgress(
+      countAnsweredQuestions(content),
+      Number(content && content.total_questions ? content.total_questions : 0),
+    );
+  }
+
+  function updateActiveContentAnswerState(questionId, selectedChoice) {
+    if (!window.activeTestContent || !questionId) return;
+    if (
+      window.activeTestContent.current_question &&
+      window.activeTestContent.current_question.id === questionId
+    ) {
+      window.activeTestContent.current_question.selected_choice = selectedChoice;
+    }
+    if (!Array.isArray(window.activeTestContent.navigation_items)) return;
+    window.activeTestContent.navigation_items.forEach(function (item) {
+      if (item && item.question_id === questionId) {
+        item.selected_choice = selectedChoice;
+      }
+    });
+  }
+
+  function persistAnswerToServer(questionId, selectedChoice) {
+    var userId = getPortalUserId();
+    if (
+      !userId ||
+      !CURRENT_TEST_CONTEXT.attempt_id ||
+      !questionId ||
+      !selectedChoice
+    ) {
+      return Promise.resolve();
+    }
+
+    return postToFunction(SAVE_ANSWER_FUNCTION_URL, {
+      user_id: userId,
+      attempt_id: CURRENT_TEST_CONTEXT.attempt_id,
+      question_id: questionId,
+      selected_choice: selectedChoice,
+    }).catch(function (err) {
+      console.error("Failed to save answer:", err);
+    });
   }
 
   function setText(selector, value) {
@@ -1307,15 +1417,10 @@
     });
 
     if (!activeAttempt || !activeAttempt.has_active_attempt) {
-      setQuestionProgress(0, 0);
       setTimerText(0);
       return;
     }
 
-    setQuestionProgress(
-      activeAttempt.answered_questions || 0,
-      activeAttempt.total_questions || 0,
-    );
     CURRENT_TEST_CONTEXT.attempt_id = activeAttempt.attempt_id || null;
     CURRENT_TEST_CONTEXT.remaining_seconds = Number(
       activeAttempt.remaining_seconds || 0,
@@ -1424,18 +1529,10 @@
         };
         setAttemptAnswerMap(map);
 
-        var answeredCount = Object.keys(map).filter(function (qid) {
-          var item = map[qid];
-          return (
-            item &&
-            item.attempt_id === CURRENT_TEST_CONTEXT.attempt_id &&
-            item.selected_choice
-          );
-        }).length;
-        setQuestionProgress(
-          answeredCount,
-          CURRENT_TEST_CONTEXT.total_questions || 0,
-        );
+        updateActiveContentAnswerState(questionId, selectedKey);
+        updateQuestionProgressFromContent(window.activeTestContent);
+        renderNavigationItems(window.activeTestContent);
+        persistAnswerToServer(questionId, selectedKey);
 
         if (previous !== selectedKey) {
           var events = getAttemptAnswerEvents();
@@ -1535,6 +1632,9 @@
     if (!content || !content.current_passage || !content.current_question)
       return;
 
+    syncAttemptAnswersFromContent(content);
+    content = mergeLocalAttemptAnswersIntoContent(content);
+
     ensureAllowedSectionPosition(content.attempt_id);
     var allowedPosition = getAllowedSectionPosition(content.attempt_id);
     if (content.current_passage.position > allowedPosition) {
@@ -1594,6 +1694,7 @@
     CURRENT_TEST_CONTEXT.current_question_number = Number(
       content.current_question_number || 1,
     );
+    updateQuestionProgressFromContent(content);
     updateNextButtonLabel();
     setSectionReviewChrome();
     renderFlagButtonState();
@@ -1622,7 +1723,13 @@
     applyUserToScreen();
     wireNavigationModal();
     wireSectionReviewReturnShortcut();
-    Promise.all([loadAttemptHeaderStats(), loadActiveTestContent()])
+    Promise.resolve()
+      .then(function () {
+        return loadActiveTestContent();
+      })
+      .then(function () {
+        return loadAttemptHeaderStats();
+      })
       .catch(function (err) {
         console.error("Active test screen init error:", err);
       })
