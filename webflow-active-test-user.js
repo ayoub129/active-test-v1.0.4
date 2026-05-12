@@ -26,6 +26,12 @@
   var ACTIVE_TEST_APP_STYLE_ID = "active-test-ui-overrides";
   var QUESTION_NAV_LOADING_ID = "question-nav-loading-indicator";
   var QUESTION_NAV_IN_PROGRESS = false;
+  var HIGHLIGHT_COLOR_STORAGE_KEY = "portal_highlight_color";
+  var HIGHLIGHT_COLORS = {
+    yellow: "#FFF59D",
+    blue: "#B3D9FF",
+  };
+  var CURRENT_HIGHLIGHT_COLOR = "yellow";
   var CURRENT_TEST_CONTEXT = {
     attempt_id: null,
     passage_id: null,
@@ -194,7 +200,9 @@
       "[data-passage-figure]{margin:0;}" +
       "[data-passage-figure] img{display:block;max-width:100%;height:auto;}" +
       "[data-passage-figure-caption]{margin-top:8px;font-size:13px;line-height:1.45;color:#333;}" +
-      "[data-passage-attribution]{margin-top:16px;font-size:12px;line-height:1.45;color:#555;}";
+      "[data-passage-attribution]{margin-top:16px;font-size:12px;line-height:1.45;color:#555;}" +
+      "[data-text-action='highlight'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}" +
+      "[data-text-action='highlight-color-toggle'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}";
     (document.head || document.documentElement).appendChild(style);
   })();
 
@@ -598,6 +606,54 @@
     }
 
     return { highlightButton: highlightButton, strikeButton: strikeButton };
+  }
+
+  function getHighlightColorToggle() {
+    return document.querySelector("[data-text-action='highlight-color-toggle']");
+  }
+
+  function getHighlightColorKey() {
+    return CURRENT_HIGHLIGHT_COLOR === "blue" ? "blue" : "yellow";
+  }
+
+  function loadHighlightColorPreference() {
+    var stored = localStorage.getItem(HIGHLIGHT_COLOR_STORAGE_KEY);
+    if (stored === "blue" || stored === "yellow") {
+      CURRENT_HIGHLIGHT_COLOR = stored;
+    }
+  }
+
+  function saveHighlightColorPreference() {
+    localStorage.setItem(HIGHLIGHT_COLOR_STORAGE_KEY, getHighlightColorKey());
+  }
+
+  function getHighlightStyleText(colorKey) {
+    var key = colorKey || getHighlightColorKey();
+    return "background:" + HIGHLIGHT_COLORS[key] + ";";
+  }
+
+  function syncHighlightColorControl() {
+    var colorKey = getHighlightColorKey();
+    var colorValue = HIGHLIGHT_COLORS[colorKey];
+    var controls = [getFormattingButtons().highlightButton, getHighlightColorToggle()];
+    controls.forEach(function (control) {
+      if (!control) return;
+      control.setAttribute("data-highlight-color", colorKey);
+      control.style.setProperty("--active-highlight-color", colorValue);
+      control.setAttribute(
+        "title",
+        colorKey === "yellow"
+          ? "Yellow highlight active. Shift+click Highlight to switch to blue."
+          : "Blue highlight active. Shift+click Highlight to switch to yellow.",
+      );
+    });
+  }
+
+  function cycleHighlightColor() {
+    CURRENT_HIGHLIGHT_COLOR =
+      getHighlightColorKey() === "yellow" ? "blue" : "yellow";
+    saveHighlightColorPreference();
+    syncHighlightColorControl();
   }
 
   function setButtonEnabled(el, enabled) {
@@ -1044,9 +1100,30 @@
     renderNavigationItems(content);
   }
 
+  function setFlagButtonBusy(isBusy) {
+    var button = getFlagButton();
+    if (!button) return;
+    if (isBusy) {
+      button.setAttribute("data-flag-busy", "true");
+      button.setAttribute("aria-busy", "true");
+      button.style.opacity = "0.65";
+      button.style.pointerEvents = "none";
+      if ("disabled" in button) {
+        button.disabled = true;
+      }
+      return;
+    }
+
+    button.removeAttribute("data-flag-busy");
+    button.removeAttribute("aria-busy");
+    button.style.opacity = "";
+    button.style.pointerEvents = "";
+  }
+
   function renderFlagButtonState() {
     var button = getFlagButton();
     if (!button) return;
+    if (button.getAttribute("data-flag-busy") === "true") return;
     button.style.color = "#555";
     var enabled = Boolean(CURRENT_TEST_CONTEXT.question_id);
     if ("disabled" in button) {
@@ -1077,9 +1154,11 @@
       var userId = getPortalUserId();
       if (!userId) return;
 
-      if ("disabled" in button) {
-        button.disabled = true;
-      }
+      setFlagButtonBusy(true);
+      button.textContent = CURRENT_TEST_CONTEXT.is_flagged
+        ? "Unflagging..."
+        : "Flagging...";
+
       try {
         var result = await postToFunction(TOGGLE_QUESTION_FLAG_FUNCTION_URL, {
           user_id: userId,
@@ -1094,6 +1173,7 @@
       } catch (err) {
         console.error("Flag toggle error:", err);
       } finally {
+        setFlagButtonBusy(false);
         renderFlagButtonState();
       }
     });
@@ -1129,6 +1209,7 @@
     if (mark === "highlight" || mark === "strikethrough") return mark;
     var style = normalizePassageMarkStyle(span.getAttribute("style"));
     if (style.indexOf("background:#fff59d") !== -1) return "highlight";
+    if (style.indexOf("background:#b3d9ff") !== -1) return "highlight";
     if (style.indexOf("text-decoration:line-through") !== -1) {
       return "strikethrough";
     }
@@ -1204,24 +1285,86 @@
     return true;
   }
 
+  function getTextNodesInRange(range) {
+    var body = getPassageBodyElement();
+    if (!body || !range) return [];
+
+    var nodes = [];
+    var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        if (!node.nodeValue || node.nodeValue.length === 0) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (!rangeIntersectsNode(range, node)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    var current;
+    while ((current = walker.nextNode())) {
+      nodes.push(current);
+    }
+    return nodes;
+  }
+
+  function wrapTextNodeInRange(textNode, range, styleText, markType) {
+    if (!textNode || textNode.nodeType !== 3 || !textNode.parentNode) return;
+
+    var text = textNode.nodeValue || "";
+    var start =
+      textNode === range.startContainer ? range.startOffset : 0;
+    var end = textNode === range.endContainer ? range.endOffset : text.length;
+    start = Math.max(0, Math.min(start, text.length));
+    end = Math.max(start, Math.min(end, text.length));
+    if (start >= end) return;
+
+    var parent = textNode.parentNode;
+    var beforeText = text.slice(0, start);
+    var middleText = text.slice(start, end);
+    var afterText = text.slice(end);
+    if (!middleText) return;
+
+    var mark = document.createElement("span");
+    mark.setAttribute("style", styleText);
+    if (markType) mark.setAttribute("data-passage-mark", markType);
+    if (markType === "highlight") {
+      mark.setAttribute("data-passage-highlight-color", getHighlightColorKey());
+    }
+    mark.textContent = middleText;
+
+    var anchor = textNode;
+    if (afterText) {
+      parent.insertBefore(document.createTextNode(afterText), anchor);
+    }
+    parent.insertBefore(mark, anchor);
+    if (beforeText) {
+      parent.insertBefore(document.createTextNode(beforeText), mark);
+    }
+    parent.removeChild(textNode);
+  }
+
+  function wrapRangeWithPassageMark(range, styleText, markType) {
+    var nodes = getTextNodesInRange(range);
+    if (!nodes.length) return;
+
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      wrapTextNodeInRange(nodes[i], range, styleText, markType);
+    }
+
+    var body = getPassageBodyElement();
+    if (body) body.normalize();
+  }
+
   function wrapSelectionWithStyle(styleText, markType) {
     var selection = window.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed)
       return;
     if (!isSelectionInsidePassage()) return;
 
-    var range = selection.getRangeAt(0);
-    var span = document.createElement("span");
-    span.setAttribute("style", styleText);
-    if (markType) span.setAttribute("data-passage-mark", markType);
-    try {
-      range.surroundContents(span);
-    } catch (_) {
-      // Fallback when selection crosses complex nodes.
-      var frag = range.extractContents();
-      span.appendChild(frag);
-      range.insertNode(span);
-    }
+    var range = selection.getRangeAt(0).cloneRange();
+    wrapRangeWithPassageMark(range, styleText, markType);
     selection.removeAllRanges();
     persistCurrentPassageMarkup();
     updateFormatButtonsState();
@@ -1233,7 +1376,7 @@
       return;
     if (!isSelectionInsidePassage()) return;
 
-    var range = selection.getRangeAt(0);
+    var range = selection.getRangeAt(0).cloneRange();
     if (removePassageMarksInRange(range, markType)) {
       selection.removeAllRanges();
       persistCurrentPassageMarkup();
@@ -1251,10 +1394,25 @@
     var buttons = getFormattingButtons();
     if (!buttons.highlightButton && !buttons.strikeButton) return;
 
+    loadHighlightColorPreference();
+    syncHighlightColorControl();
+
     if (buttons.highlightButton) {
       buttons.highlightButton.addEventListener("click", function (event) {
         event.preventDefault();
-        togglePassageMark("highlight", "background:#FFF59D;");
+        if (event.shiftKey) {
+          cycleHighlightColor();
+          return;
+        }
+        togglePassageMark("highlight", getHighlightStyleText());
+      });
+    }
+
+    var highlightColorToggle = getHighlightColorToggle();
+    if (highlightColorToggle) {
+      highlightColorToggle.addEventListener("click", function (event) {
+        event.preventDefault();
+        cycleHighlightColor();
       });
     }
 
