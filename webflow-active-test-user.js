@@ -632,6 +632,13 @@
     return "background:" + HIGHLIGHT_COLORS[key] + ";";
   }
 
+  function getHighlightIconElements(button) {
+    if (!button) return [];
+    var scoped = button.querySelectorAll("[data-highlight-icon]");
+    if (scoped.length) return Array.from(scoped);
+    return Array.from(button.querySelectorAll(".text-span-9, strong"));
+  }
+
   function syncHighlightColorControl() {
     var colorKey = getHighlightColorKey();
     var colorValue = HIGHLIGHT_COLORS[colorKey];
@@ -646,6 +653,10 @@
           ? "Yellow highlight active. Shift+click Highlight to switch to blue."
           : "Blue highlight active. Shift+click Highlight to switch to yellow.",
       );
+      getHighlightIconElements(control).forEach(function (icon) {
+        icon.style.textDecorationLine = "underline";
+        icon.style.textDecorationColor = colorValue;
+      });
     });
   }
 
@@ -1334,13 +1345,12 @@
     }
     mark.textContent = middleText;
 
-    var anchor = textNode;
-    if (afterText) {
-      parent.insertBefore(document.createTextNode(afterText), anchor);
-    }
-    parent.insertBefore(mark, anchor);
     if (beforeText) {
-      parent.insertBefore(document.createTextNode(beforeText), mark);
+      parent.insertBefore(document.createTextNode(beforeText), textNode);
+    }
+    parent.insertBefore(mark, textNode);
+    if (afterText) {
+      parent.insertBefore(document.createTextNode(afterText), textNode);
     }
     parent.removeChild(textNode);
   }
@@ -1600,7 +1610,7 @@
     }
 
     if (isSectionReviewReturnMode()) {
-      setExamTimerPaused(true, "section_review");
+      setExamTimerPaused(false);
     }
     startCountdown(CURRENT_TEST_CONTEXT.remaining_seconds);
   }
