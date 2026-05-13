@@ -118,12 +118,8 @@
     img.setAttribute("data-passage-figure-image", "");
     panel.appendChild(img);
 
-    if (figure.caption) {
-      var caption = document.createElement("figcaption");
-      caption.textContent = figure.caption;
-      caption.setAttribute("data-passage-figure-caption", "");
-      panel.appendChild(caption);
-    }
+    // Caption is omitted here: figure assets (e.g. SVG) usually embed the formatted caption;
+    // appending DB caption as <figcaption> duplicated that text on active test and review.
 
     return panel;
   }
