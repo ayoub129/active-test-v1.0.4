@@ -21,6 +21,7 @@
   var SEEN_QUESTIONS_STORAGE_KEY = "portal_seen_questions";
   var ATTEMPT_ANSWERS_STORAGE_KEY = "portal_attempt_answers";
   var ATTEMPT_ANSWER_EVENTS_STORAGE_KEY = "portal_attempt_answer_events";
+  var QUESTION_DWELL_STORAGE_KEY = "portal_attempt_question_dwell";
   var PASSAGE_ANNOTATIONS_STORAGE_KEY = "portal_passage_annotations";
   var ACTIVE_TEST_PRELOAD_STYLE_ID = "active-test-preload-style";
   var ACTIVE_TEST_APP_STYLE_ID = "active-test-ui-overrides";
@@ -41,6 +42,84 @@
     current_question_number: 1,
     total_questions: 0,
   };
+
+  var questionDwellSessionStartMs = null;
+  var questionDwellSessionAttemptId = null;
+  var questionDwellSessionQuestionId = null;
+
+  function loadQuestionDwellRoot() {
+    var raw = localStorage.getItem(QUESTION_DWELL_STORAGE_KEY);
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveQuestionDwellRoot(root) {
+    localStorage.setItem(
+      QUESTION_DWELL_STORAGE_KEY,
+      JSON.stringify(root || {}),
+    );
+  }
+
+  function addAccumulatedDwellSeconds(attemptId, questionId, seconds) {
+    if (!attemptId || !questionId) return;
+    var delta = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (delta <= 0) return;
+    var root = loadQuestionDwellRoot();
+    if (!root[attemptId]) root[attemptId] = {};
+    var prev = Number(root[attemptId][questionId]) || 0;
+    root[attemptId][questionId] = prev + delta;
+    saveQuestionDwellRoot(root);
+  }
+
+  function flushOpenQuestionDwellSegment() {
+    if (
+      !questionDwellSessionStartMs ||
+      !questionDwellSessionQuestionId ||
+      !questionDwellSessionAttemptId
+    ) {
+      return;
+    }
+    var elapsed = Math.max(
+      0,
+      Math.floor((Date.now() - questionDwellSessionStartMs) / 1000),
+    );
+    var aid = questionDwellSessionAttemptId;
+    var qid = questionDwellSessionQuestionId;
+    questionDwellSessionStartMs = null;
+    questionDwellSessionQuestionId = null;
+    questionDwellSessionAttemptId = null;
+    if (elapsed <= 0) return;
+    addAccumulatedDwellSeconds(aid, qid, elapsed);
+  }
+
+  function startQuestionDwellSession(attemptId, questionId) {
+    flushOpenQuestionDwellSegment();
+    if (!attemptId || !questionId) return;
+    questionDwellSessionAttemptId = attemptId;
+    questionDwellSessionQuestionId = questionId;
+    questionDwellSessionStartMs = Date.now();
+  }
+
+  function wireQuestionDwellLifecycle() {
+    if (window.__portalQuestionDwellWired) return;
+    window.__portalQuestionDwellWired = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        flushOpenQuestionDwellSegment();
+      } else {
+        var aid = CURRENT_TEST_CONTEXT.attempt_id;
+        var qid = CURRENT_TEST_CONTEXT.question_id;
+        if (aid && qid) startQuestionDwellSession(aid, qid);
+      }
+    });
+    window.addEventListener("pagehide", function () {
+      flushOpenQuestionDwellSegment();
+    });
+  }
 
   function getPassageAnnotationsStore() {
     var raw = localStorage.getItem(PASSAGE_ANNOTATIONS_STORAGE_KEY);
@@ -377,6 +456,7 @@
     var attemptId = CURRENT_TEST_CONTEXT.attempt_id;
     var passageId = CURRENT_TEST_CONTEXT.passage_id;
     if (!attemptId || !passageId) return;
+    flushOpenQuestionDwellSegment();
     persistCurrentPassageMarkup();
     setExamTimerPaused(true, "section_review");
     setModalOpen(false);
@@ -1635,9 +1715,9 @@
       }
     }
 
-    if (isSectionReviewReturnMode()) {
-      setExamTimerPaused(false);
-    }
+    // Pause is only used while browsing section review; always resume here so
+    // the countdown runs even if the return URL omitted section_review=1.
+    setExamTimerPaused(false);
     startCountdown(CURRENT_TEST_CONTEXT.remaining_seconds);
   }
 
@@ -1814,6 +1894,9 @@
     var userId = getPortalUserId();
     if (!userId) return;
 
+    flushOpenQuestionDwellSegment();
+    wireQuestionDwellLifecycle();
+
     var payload = { user_id: userId };
     var questionNumber = forcedQuestionNumber || getQuestionNumberFromUrl();
     if (questionNumber) payload.question_number = questionNumber;
@@ -1882,6 +1965,10 @@
     CURRENT_TEST_CONTEXT.question_id = content.current_question.id || null;
     CURRENT_TEST_CONTEXT.is_flagged = Boolean(
       content.current_question.is_flagged,
+    );
+    startQuestionDwellSession(
+      content.attempt_id,
+      content.current_question.id || null,
     );
     CURRENT_TEST_CONTEXT.total_questions = Number(content.total_questions || 0);
     CURRENT_TEST_CONTEXT.current_question_number = Number(
