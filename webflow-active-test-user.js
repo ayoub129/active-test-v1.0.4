@@ -27,6 +27,8 @@
   var ACTIVE_TEST_APP_STYLE_ID = "active-test-ui-overrides";
   var QUESTION_NAV_LOADING_ID = "question-nav-loading-indicator";
   var QUESTION_NAV_IN_PROGRESS = false;
+  var NAV_MODAL_SCROLL_LOCK_ACTIVE = false;
+  var NAV_MODAL_SCROLL_Y = 0;
   var HIGHLIGHT_COLOR_STORAGE_KEY = "portal_highlight_color";
   var HIGHLIGHT_COLORS = {
     yellow: "#FFF59D",
@@ -307,7 +309,9 @@
       "[data-passage-inline-figure] [data-passage-figure-caption],figcaption[data-passage-figure-caption]{margin-top:8px;font-size:13px;line-height:1.45;color:#333;}" +
       "[data-passage-attribution]{margin-top:16px;font-size:12px;line-height:1.45;color:#555;}" +
       "[data-text-action='highlight'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}" +
-      "[data-text-action='highlight-color-toggle'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}";
+      "[data-text-action='highlight-color-toggle'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}" +
+      "[data-nav-modal-overlay],.aamc-modal-overlay{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;min-height:100vh!important;min-height:100dvh!important;max-width:100%!important;margin:0!important;z-index:99990!important;align-items:center!important;justify-content:center!important;box-sizing:border-box!important;padding:16px!important;overflow:hidden!important;overscroll-behavior:contain!important;}" +
+      "[data-nav-modal-content],.aamc-modal-overlay .aamc-modal-content,.aamc-modal-content{max-height:min(85vh,720px)!important;overflow-y:auto!important;overscroll-behavior:contain!important;flex-shrink:0!important;}";
     (document.head || document.documentElement).appendChild(style);
   })();
 
@@ -994,8 +998,32 @@
     var overlay = getNavModalOverlay();
     if (!overlay) return;
 
-    overlay.style.display = isOpen ? "flex" : "none";
-    overlay.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    if (isOpen) {
+      NAV_MODAL_SCROLL_Y =
+        window.pageYOffset || document.documentElement.scrollTop || 0;
+      document.body.style.overflow = "hidden";
+      document.body.style.position = "fixed";
+      document.body.style.top = "-" + NAV_MODAL_SCROLL_Y + "px";
+      document.body.style.left = "0";
+      document.body.style.right = "0";
+      document.body.style.width = "100%";
+      NAV_MODAL_SCROLL_LOCK_ACTIVE = true;
+      overlay.style.display = "flex";
+      overlay.setAttribute("aria-hidden", "false");
+    } else {
+      overlay.style.display = "none";
+      overlay.setAttribute("aria-hidden", "true");
+      if (NAV_MODAL_SCROLL_LOCK_ACTIVE) {
+        NAV_MODAL_SCROLL_LOCK_ACTIVE = false;
+        document.body.style.overflow = "";
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.left = "";
+        document.body.style.right = "";
+        document.body.style.width = "";
+        window.scrollTo(0, NAV_MODAL_SCROLL_Y);
+      }
+    }
   }
 
   function getNavigationListContainer() {
