@@ -77,11 +77,69 @@
     setPassageAnnotationsStore(store);
   }
 
-  /** Plain-text passage bodies: one <p> per non-empty line (newline = paragraph break). */
-  function fillPassageBodyFromPlainText(container, plain) {
+  var FIGURE_INLINE_REF_RE = /\(\s*Figure\s+([^)]+?)\s*\)/gi;
+
+  function normalizeFigurePanelKey(raw) {
+    if (raw == null) return "";
+    return String(raw)
+      .replace(/\u00a0/g, " ")
+      .trim()
+      .replace(/\s+/g, "")
+      .toUpperCase();
+  }
+
+  function figuresByPanelLabel(figures) {
+    var map = {};
+    if (!Array.isArray(figures)) return map;
+    figures.forEach(function (f) {
+      if (!f || !f.panel_label) return;
+      var key = normalizeFigurePanelKey(f.panel_label);
+      if (key) map[key] = f;
+    });
+    return map;
+  }
+
+  function createInlinePassageFigureElement(figure) {
+    var panel = document.createElement("figure");
+    panel.setAttribute("data-passage-inline-figure", "");
+    panel.setAttribute("data-passage-figure", "");
+    if (figure.panel_label) {
+      panel.setAttribute("data-passage-figure-label", figure.panel_label);
+    }
+
+    var img = document.createElement("img");
+    img.src = figure.image_url || "";
+    img.alt =
+      figure.alt_text ||
+      (figure.panel_label
+        ? "Figure " + figure.panel_label
+        : "Passage figure");
+    img.loading = "lazy";
+    img.setAttribute("data-passage-figure-image", "");
+    panel.appendChild(img);
+
+    if (figure.caption) {
+      var caption = document.createElement("figcaption");
+      caption.textContent = figure.caption;
+      caption.setAttribute("data-passage-figure-caption", "");
+      panel.appendChild(caption);
+    }
+
+    return panel;
+  }
+
+  /**
+   * Plain-text passage: one <p> per non-empty line. After each paragraph, insert any figures
+   * whose panel label is first cited in that line as (Figure 1A) etc.
+   */
+  function fillPassageBodyWithInlineFigures(container, plain, figures) {
     if (!container) return;
     while (container.firstChild) container.removeChild(container.firstChild);
     if (plain == null || plain === "") return;
+
+    var byLabel = figuresByPanelLabel(figures);
+    var placed = {};
+
     String(plain)
       .split(/\r?\n/)
       .map(function (line) {
@@ -95,6 +153,22 @@
         p.textContent = line;
         p.style.margin = "0 0 12px";
         container.appendChild(p);
+
+        var seenThisLine = {};
+        var m;
+        FIGURE_INLINE_REF_RE.lastIndex = 0;
+        while ((m = FIGURE_INLINE_REF_RE.exec(line)) !== null) {
+          var key = normalizeFigurePanelKey(m[1]);
+          if (!key || seenThisLine[key]) continue;
+          seenThisLine[key] = true;
+          if (placed[key]) continue;
+          var fig = byLabel[key];
+          if (!fig) continue;
+          placed[key] = true;
+          var figEl = createInlinePassageFigureElement(fig);
+          figEl.style.margin = "0 0 16px";
+          container.appendChild(figEl);
+        }
       });
   }
 
@@ -110,11 +184,11 @@
       body.innerHTML = saved;
       return;
     }
-    fillPassageBodyFromPlainText(body, text);
-  }
-
-  function getPassageFiguresElement() {
-    return document.querySelector("[data-passage-figures]");
+    fillPassageBodyWithInlineFigures(
+      body,
+      text,
+      (passage && passage.figures) || [],
+    );
   }
 
   function getPassageAttributionElement() {
@@ -132,50 +206,6 @@
     }
     attributionEl.textContent = text;
     attributionEl.style.display = "";
-  }
-
-  function renderPassageFigures(passage) {
-    var container = getPassageFiguresElement();
-    if (!container) return;
-    container.innerHTML = "";
-    var figures = (passage && passage.figures) || [];
-    if (!Array.isArray(figures) || figures.length === 0) {
-      container.style.display = "none";
-      return;
-    }
-    container.style.display = "";
-    figures
-      .slice()
-      .sort(function (a, b) {
-        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
-      })
-      .forEach(function (figure) {
-        var panel = document.createElement("figure");
-        panel.setAttribute("data-passage-figure", "");
-        if (figure.panel_label) {
-          panel.setAttribute("data-passage-figure-label", figure.panel_label);
-        }
-
-        var img = document.createElement("img");
-        img.src = figure.image_url || "";
-        img.alt =
-          figure.alt_text ||
-          (figure.panel_label
-            ? "Figure " + figure.panel_label
-            : "Passage figure");
-        img.loading = "lazy";
-        img.setAttribute("data-passage-figure-image", "");
-        panel.appendChild(img);
-
-        if (figure.caption) {
-          var caption = document.createElement("figcaption");
-          caption.textContent = figure.caption;
-          caption.setAttribute("data-passage-figure-caption", "");
-          panel.appendChild(caption);
-        }
-
-        container.appendChild(panel);
-      });
   }
 
   (function hidePageBeforeInit() {
@@ -196,10 +226,10 @@
       ".text-block-54{color:#111!important;font-size:14px!important;}" +
       ".text-block-56{color:#111!important;text-transform:capitalize!important;margin-bottom:6px!important;font-size:16px!important;font-weight:700!important;}" +
       ".text-block-63.nav-flag-flagged{color:#e00!important;}" +
-      "[data-passage-figures]{display:flex;flex-direction:column;gap:16px;margin:16px 0;}" +
-      "[data-passage-figure]{margin:0;}" +
-      "[data-passage-figure] img{display:block;max-width:100%;height:auto;}" +
-      "[data-passage-figure-caption]{margin-top:8px;font-size:13px;line-height:1.45;color:#333;}" +
+      "[data-passage-figures]{display:none!important;}" +
+      "[data-passage-inline-figure]{margin:0;}" +
+      "[data-passage-inline-figure] img{display:block;max-width:100%;height:auto;}" +
+      "[data-passage-inline-figure] [data-passage-figure-caption],figcaption[data-passage-figure-caption]{margin-top:8px;font-size:13px;line-height:1.45;color:#333;}" +
       "[data-passage-attribution]{margin-top:16px;font-size:12px;line-height:1.45;color:#555;}" +
       "[data-text-action='highlight'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}" +
       "[data-text-action='highlight-color-toggle'][data-highlight-color]{box-shadow:inset 0 -4px 0 var(--active-highlight-color,#fff59d);}";
@@ -1838,7 +1868,6 @@
     CURRENT_TEST_CONTEXT.attempt_id = content.attempt_id || null;
     CURRENT_TEST_CONTEXT.passage_id = content.current_passage.id || null;
     renderPassageBody(content.current_passage);
-    renderPassageFigures(content.current_passage);
     renderPassageAttribution(content.current_passage);
     setText("[data-question-stem]", content.current_question.stem || "");
 
